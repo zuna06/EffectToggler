@@ -17,7 +17,7 @@ Control.prototype.add = function(type, bounds, value) {
     var c = new Control(type, value); this.children.push(c);
     if (type === 'dropdownlist') {
         c.items = value;
-        Object.defineProperty(c, 'selection', {get:function(){return this._selection;},set:function(v){this._selection=typeof v==='number'?{index:v}:v;}});
+        Object.defineProperty(c, 'selection', {get:function(){return this._selection;},set:function(v){this._selection=typeof v==='number'?{index:v,text:this.items[v]}:v;}});
     }
     return c;
 };
@@ -25,7 +25,7 @@ Control.prototype.addEventListener = Control.prototype.notify = Control.prototyp
 function Panel() {}
 var ui;
 function Window() { ui = new Control('palette'); return ui; }
-var ScriptUI = {newFont:function(){return {};}};
+var ScriptUI = {newFont:function(name,style,size){return {name:name,style:style,size:size};}};
 var PropertyValueType = {OneD:1,TwoD:2,ThreeD:3,TwoD_SPATIAL:4,ThreeD_SPATIAL:5,COLOR:6,CUSTOM_VALUE:7,LAYER_INDEX:8};
 var PropertyType = {PROPERTY:1,INDEXED_GROUP:2};
 function isValid(o) { return !!o && o.valid !== false; }
@@ -44,7 +44,11 @@ function Group(name, children, effect) {
     this.numProperties = children.length; this.valid = true;
     for (var i=0;i<children.length;i++) { children[i].parentProperty=this; children[i].propertyIndex=i+1; }
 }
-Group.prototype.property = function(i) { return this.children[i-1]; };
+// AE host lookups need not return the same JavaScript wrapper each time.
+Group.prototype.property = function(i) {
+    var child = this.children[i-1];
+    return child ? new Proxy(child, {}) : child;
+};
 function Layer(effects) {
     this.name='Adjustment Layer 1'; this.valid=true; this.locked=false;
     this.fx=new Group('ADBE Effect Parade',effects); this.selectedProperties=[];
@@ -75,13 +79,32 @@ function control(label) {
 }
 function click(label) { var c=control(label); assert(c.enabled,'Control disabled: '+label); c.onClick(); }
 function tick(){eval(scheduled);}
-function status(){ return ui.children[9].text; }
-function feedback(){return ui.children[10].text;}
+function status(){ return ui.children[9].helpTip; }
+function feedback(){return ui.children[9].helpTip;}
 `;
 const tests = String.raw`
 assert(!control('A\nEmpty').enabled && !control('Restore Original').enabled, 'Empty actions disabled');
 click('Use Selected Layer');
 assert(control('Capture A').enabled, 'Attach enables capture');
+assert(!ui.children[9].visible && ui.children[9].text==='', 'Routine summary line is hidden');
+assert(control('Use Selected Layer').text===layer.name, 'Attach button displays target layer name');
+assert(control('A\nEmpty').maximumSize.height===44, 'A/B cards stay compact');
+assert(!findEdit(ui), 'No feedback text box');
+function findEdit(c){if(c.type==='edittext')return true;for(var i=0;i<c.children.length;i++){if(findEdit(c.children[i]))return true;}return false;}
+// Exercise custom painters; logic-only tests previously never invoked onDraw.
+var drawn=[], painter=control('A\nEmpty'), gfx=painter.graphics;
+['newPath','rectPath','moveTo','lineTo','closePath','fillPath','strokePath'].forEach(function(name){gfx[name]=function(){};});
+gfx.measureString=function(label,font){assert(!font || font===this.font,'Measurement uses the current graphics font');return [label.length*7,label.length===1?18:11];};
+gfx.drawString=function(label,pen,x,y){drawn.push({label:label,x:x,y:y,font:this.font});};
+painter.size={width:120,height:44}; painter.onDraw();
+assert(drawn[0].x===56.5 && drawn[0].y===7, 'A label is centered using measured text bounds');
+assert(drawn[1].x===42.5 && drawn[1].y===26, 'State label shares centered text stack');
+assert(drawn[0].font.size===16 && drawn[1].font.size===9, 'Each line is drawn with its measured font');
+var roundedLabels=['Use Selected Layer','Replace Session','Cancel','Capture A','Capture B','Restore Original','Refresh'];
+roundedLabels.forEach(function(label){var c=control(label);c.graphics=gfx;c.onDraw();});
+var scopePainter=ui.children[5].children[1];
+scopePainter.graphics=gfx;scopePainter.onDraw();
+assert(drawn.length===10, 'All rounded control painters render without errors');
 click('Capture A');
 assert(feedback().indexOf('2 animated skipped; 1 unsupported skipped')>=0,'Capture skip counts');
 assert(control('A\nEmpty').stateLabel==='ACTIVE','A active after capture');
@@ -130,9 +153,9 @@ assert(feedback().indexOf('added or removed')>=0,'Effect addition blocks apply')
 layer.fx.children.pop(); layer.fx.numProperties=2;
 click('Use Selected Layer'); click('Replace Session'); click('Capture A');
 var replacement=new Group('Effect 1',fx1.children,true); replacement.propertyIndex=1;
-layer.fx.children[0]=replacement; tick();
+fx1.valid=false; layer.fx.children[0]=replacement; tick();
 assert(!control('A\nEmpty').enabled && feedback().indexOf('Effects changed')>=0,'Same-type replacement blocks apply');
-layer.fx.children[0]=fx1;
+fx1.valid=true; layer.fx.children[0]=fx1;
 click('Use Selected Layer'); click('Replace Session'); click('Capture A');
 layer.valid=false; tick(); assert(!control('Restore Original').enabled && feedback().indexOf('deleted')>=0,'Deleted layer handled');
 layer.valid=true; comp.valid=false; tick(); assert(feedback().indexOf('composition is unavailable')>=0,'Removed composition handled');

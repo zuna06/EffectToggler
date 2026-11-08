@@ -3,12 +3,12 @@
 /* Effect A/B 1.0.0 | Install in Scripts/ScriptUI Panels. No disk/network access. */
 (function (host) {
     var TITLE = "Effect A/B", session = null, message = "Select one layer, then attach it.", pending = null;
-    var busy = false, stopped = false, timer = null, last = "Original";
+    var busy = false, stopped = false, timer = null, last = "Original", actionError = "";
     var root = (host instanceof Panel) ? host : new Window("palette", TITLE, undefined, {resizeable: true});
     var accent = [0.36, 0.73, 1, 1], fg = [0.90, 0.91, 0.94, 1], muted = [0.57, 0.60, 0.65, 1];
     root.orientation = "column"; root.alignChildren = ["fill", "top"];
-    root.spacing = 8; root.margins = 12;
-    root.minimumSize = [280, 460]; root.preferredSize = [320, 480];
+    root.spacing = 6; root.margins = 10;
+    root.minimumSize = [260, 290]; root.preferredSize = [290, 310];
     try { root.graphics.backgroundColor = root.graphics.newBrush(root.graphics.BrushType.SOLID_COLOR, [0.12, 0.13, 0.15, 1]); } catch (ignore) {}
 
     function text(parent, value) {
@@ -32,25 +32,57 @@
     scope.helpTip = "Selected Effects freezes the effects currently selected on the attached layer. Reattach to reset scope.";
     var slots = root.add("group"); slots.orientation = "row"; slots.alignChildren = ["fill", "fill"]; slots.spacing = 10;
 
+    function roundedPath(g, x, y, w, h, radius) {
+        var r = Math.min(radius, w / 2, h / 2), i, j, angle;
+        var centers = [[x + w - r, y + r], [x + w - r, y + h - r], [x + r, y + h - r], [x + r, y + r]];
+        g.newPath();
+        for (i = 0; i < 4; i++) {
+            for (j = 0; j <= 8; j++) {
+                angle = (-90 + i * 90 + j * 90 / 8) * Math.PI / 180;
+                var px = centers[i][0] + r * Math.cos(angle), py = centers[i][1] + r * Math.sin(angle);
+                if (i === 0 && j === 0) { g.moveTo(px, py); } else { g.lineTo(px, py); }
+            }
+        }
+        g.closePath();
+    }
+    function face(control, selected) {
+        var g = control.graphics, w = control.size.width, h = control.size.height;
+        // Clear corners to the panel background before painting the rounded face.
+        g.newPath(); g.rectPath(0, 0, w, h);
+        g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, [0.12, 0.13, 0.15, 1]));
+        roundedPath(g, 1, 1, w - 2, h - 2, 6);
+        g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, selected ? [0.16, 0.27, 0.35, 1] : [0.17, 0.18, 0.21, 1]));
+        roundedPath(g, 1, 1, w - 2, h - 2, 6);
+        g.strokePath(g.newPen(g.PenType.SOLID_COLOR, selected ? accent : [0.32, 0.34, 0.38, 1], selected ? 2 : 1));
+        if (control.active) {
+            roundedPath(g, 4, 4, w - 8, h - 8, 4);
+            g.strokePath(g.newPen(g.PenType.SOLID_COLOR, muted, 1));
+        }
+    }
     function slot(label) {
         var b = slots.add("button", undefined, label + "\nEmpty");
-        b.alignment = ["fill", "fill"]; b.minimumSize = [100, 78]; b.preferredSize.height = 82;
+        b.alignment = ["fill", "top"]; b.minimumSize = [90, 42]; b.preferredSize.height = 44; b.maximumSize.height = 44;
         b.slotLabel = label; b.stateLabel = "Empty"; b.isActive = false;
         // Keep real buttons for native keyboard/focus behavior; draw the two-line face ourselves.
         b.onDraw = function () {
             var g = this.graphics, w = this.size.width, h = this.size.height;
-            var color = this.isActive ? [0.16, 0.27, 0.35, 1] : [0.17, 0.18, 0.21, 1];
-            g.newPath(); g.rectPath(0, 0, w, h);
-            g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, color));
+            face(this, this.isActive);
             var ink = this.enabled ? (this.isActive ? accent : fg) : muted;
-            g.newPath(); g.rectPath(1, 1, w - 2, h - 2);
-            g.strokePath(g.newPen(g.PenType.SOLID_COLOR, this.isActive ? accent : muted, this.isActive ? 2 : 1));
-            var big = ScriptUI.newFont(g.font.name, "BOLD", 23), small = ScriptUI.newFont(g.font.name, "REGULAR", 10);
+            var originalFont = g.font;
+            var big = ScriptUI.newFont(originalFont.family || originalFont.name, "BOLD", 16), small = ScriptUI.newFont(originalFont.family || originalFont.name, "REGULAR", 9);
             var pen = g.newPen(g.PenType.SOLID_COLOR, ink, 1);
-            var a = g.measureString(this.slotLabel, big), b = g.measureString(this.stateLabel, small);
-            g.drawString(this.slotLabel, pen, (w - a[0]) / 2, h / 2 - 25, big);
-            g.drawString(this.stateLabel, pen, (w - b[0]) / 2, h / 2 + 9, small);
-            if (this.active) { g.newPath(); g.rectPath(5, 5, w - 10, h - 10); g.strokePath(g.newPen(g.PenType.SOLID_COLOR, ink, 1)); }
+            // AE can measure with the current graphics font even when a font argument
+            // is supplied. Make measurement and drawing use the same current font.
+            g.font = big;
+            var a = g.measureString(this.slotLabel);
+            g.font = small;
+            var b = g.measureString(this.stateLabel);
+            var gap = 1, top = (h - a[1] - b[1] - gap) / 2;
+            g.font = big;
+            g.drawString(this.slotLabel, pen, (w - a[0]) / 2, top);
+            g.font = small;
+            g.drawString(this.stateLabel, pen, (w - b[0]) / 2, top + a[1] + gap);
+            g.font = originalFont;
         };
         return b;
     }
@@ -60,9 +92,27 @@
     captureA.alignment = captureB.alignment = ["fill", "center"];
     var restore = root.add("button", undefined, "Restore Original");
     var summary = text(root, "No comparison yet"); summary.characters = 28;
-    var feedback = root.add("edittext", undefined, message, {multiline: true, readonly: true, scrolling: true});
-    feedback.alignment = ["fill", "fill"]; feedback.minimumSize = [240, 64]; feedback.preferredSize.height = 64;
+    summary.maximumSize.height = 20;
     var refreshButton = root.add("button", undefined, "Refresh"); refreshButton.helpTip = "Recheck the target and detect manual edits. Automatic checks run about once per second.";
+    function roundedControl(control, dropdown) {
+        control.onDraw = function () {
+            face(this, false);
+            var g = this.graphics, w = this.size.width, h = this.size.height;
+            var label = dropdown ? (this.selection ? this.selection.text : "") : this.text;
+            var font = g.font, max = w - (dropdown ? 34 : 20), shown = label;
+            while (shown.length && g.measureString(shown, font)[0] > max) { shown = shown.substring(0, shown.length - 1); }
+            if (shown !== label && shown.length > 3) { shown = shown.substring(0, shown.length - 3) + "..."; }
+            var size = g.measureString(shown, font), ink = this.enabled ? fg : muted;
+            g.drawString(shown, g.newPen(g.PenType.SOLID_COLOR, ink, 1), dropdown ? 10 : (w - size[0]) / 2, (h - size[1]) / 2, font);
+            if (dropdown) {
+                g.newPath(); g.moveTo(w - 20, h / 2 - 2); g.lineTo(w - 15, h / 2 + 3); g.lineTo(w - 10, h / 2 - 2);
+                g.strokePath(g.newPen(g.PenType.SOLID_COLOR, ink, 1.5));
+            }
+        };
+    }
+    var roundedButtons = [attach, replace, cancel, captureA, captureB, restore, refreshButton];
+    for (var buttonIndex = 0; buttonIndex < roundedButtons.length; buttonIndex++) { roundedControl(roundedButtons[buttonIndex], false); }
+    roundedControl(scope, true);
 
     function clone(v) {
         if (typeof v === "number") { return v; }
@@ -98,8 +148,9 @@
             if (count !== s.effects.length) { s.structureIssue = "Effects were added or removed. Reattach the layer to reset the comparison."; return s.structureIssue; }
             for (i = 0; i < count; i++) {
                 old = s.effects[i]; current = fx.property(i + 1);
-                // Retained effect handles catch reorder/replacement, including identical effect types.
-                if (!live(old.ref) || old.ref.propertyIndex !== i + 1 || old.ref !== current || current.matchName !== old.matchName) {
+                // AE can return different JavaScript wrappers for the same native effect.
+                // Check retained-handle validity and index, not wrapper identity.
+                if (!live(old.ref) || old.ref.propertyIndex !== i + 1 || old.ref.matchName !== old.matchName || current.matchName !== old.matchName) {
                     s.structureIssue = "Effects changed or were reordered. Reattach the layer to reset the comparison."; return s.structureIssue;
                 }
             }
@@ -167,7 +218,7 @@
     function setMessage(value) { message = value; }
     function hideConfirmation() {
         pending = null; confirmation.visible = false; confirmation.maximumSize.height = 0;
-        root.minimumSize.height = 460;
+        root.minimumSize.height = 290;
         root.layout.layout(true); root.layout.resize();
     }
     function makeSession(comp, layer) {
@@ -191,7 +242,8 @@
     function guard(action) {
         return function () {
             if (busy) { return; } busy = true;
-            try { action(); } catch (e) { setMessage(errorText(e)); }
+            actionError = "";
+            try { action(); } catch (e) { actionError = errorText(e); setMessage(actionError); }
             finally { busy = false; refresh(); }
         };
     }
@@ -206,8 +258,8 @@
         if (session && (session.A || session.B)) {
             pending = {comp: comp, layer: layer};
             confirmation.maximumSize.height = 36; confirmation.visible = true;
-            root.minimumSize.height = 504;
-            if (root.size.height < 504) { root.size.height = 504; }
+            root.minimumSize.height = 326;
+            if (root.size.height < 326) { root.size.height = 326; }
             setMessage("Replace this session? A, B and Original will be cleared. No settings will be applied.");
             root.layout.layout(true); root.layout.resize();
         } else { installSession(comp, layer); }
@@ -293,7 +345,7 @@
                 else { active = "Modified"; }
                 state = session.indices.length + " effects \u00b7 " + (session.A && session.B ? "Both versions saved" : session.A ? "A saved" : session.B ? "B saved" : "No versions saved");
                 state += " \u00b7 " + active;
-                target.text = session.comp.name + " \u203a " + session.layer.name;
+                target.text = session.comp.name;
                 target.helpTip = target.text;
             } catch (e) { issue = "Cannot read effect controls. Reattach the layer to reset."; available = false; }
         }
@@ -304,10 +356,19 @@
         captureA.enabled = captureB.enabled = available && session.indices.length > 0;
         restore.enabled = available && session.indices.length > 0 && !session.layer.locked;
         scope.enabled = available && !session.locked;
-        summary.text = state; summary.helpTip = state;
-        feedback.text = issue || message;
-        feedback.helpTip = feedback.text;
-        if (available && session.layer.locked) { feedback.text = "Layer is locked. Captures are available; unlock it to apply settings."; }
+        attach.text = session && live(session.layer) ? session.layer.name : "Use Selected Layer";
+        attach.helpTip = "Attach the selected layer. Current target: " + attach.text;
+        var notice = issue || actionError || (pending ? "Replace session or cancel" : "");
+        if (available && session.layer.locked) { notice = "Unlock layer to apply"; }
+        summary.text = notice;
+        var showNotice = !!notice;
+        if (summary.visible !== showNotice) {
+            summary.visible = showNotice;
+            summary.maximumSize.height = showNotice ? 20 : 0;
+            root.layout.layout(true); root.layout.resize();
+        }
+        summary.helpTip = (notice ? notice + "\n" : "") + state + "\n" + message;
+        refreshButton.helpTip = "Refresh target and settings.\n" + summary.helpTip;
     }
     root.onResizing = root.onResize = function () { this.layout.resize(); };
     root.addEventListener("mouseover", function () { refresh(); });
